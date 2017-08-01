@@ -1,15 +1,22 @@
 # shellcheck shell=bash disable=SC2086
+  
+DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+source "$DIR/ruby_scaffolding/node.sh"
 
 scaffolding_load() {
   _setup_funcs
   _setup_vars
+  _setup_node_vars
 
   pushd "$SRC_PATH" > /dev/null
   _detect_gemfile
+  _detect_node
+  _detect_node_pkg_manager
   _detect_app_type
   _detect_missing_gems
   _detect_process_bins
   _update_vars
+  _update_node_vars
   _update_pkg_build_deps
   _update_pkg_deps
   _update_bin_dirs
@@ -50,6 +57,7 @@ do_default_build() {
   # TODO fin: add cache loading of `$CACHE_PATH/vendor`
 
   scaffolding_bundle_install
+  scaffolding_node_modules_install
 
   # build_line "Cleaning old cached gems"
   # _bundle clean --dry-run --force
@@ -57,13 +65,16 @@ do_default_build() {
 
   scaffolding_remove_gem_cache
   scaffolding_fix_rubygems_shebangs
+  scaffolding_node_fix_shebangs
   scaffolding_setup_app_config
+  scaffolding_node_setup_config
   scaffolding_setup_database_config
 }
 
 do_default_install() {
   scaffolding_install_app
   scaffolding_install_gems
+  scaffolding_node_install_modules
   scaffolding_generate_binstubs
   scaffolding_vendor_bundler
   scaffolding_install_libexec
@@ -170,9 +181,6 @@ EOT
   done
 }
 
-
-
-
 scaffolding_bundle_install() {
   local start_sec elapsed dot_bundle
 
@@ -247,6 +255,11 @@ scaffolding_setup_app_config() {
   if _default_toml_has_no rails_env \
       && [[ -v "scaffolding_env[RAILS_ENV]" ]]; then
     echo 'rails_env = "production"' >> "$t"
+  fi
+  if [[ "${_uses_node:-}" == "true" ]] \
+      && _default_toml_has_no node_env \
+      && [[ -v "scaffolding_env[NODE_ENV]" ]]; then
+    echo 'node_env = "production"' >> "$t"
   fi
 
   if _default_toml_has_no app; then
@@ -405,9 +418,6 @@ scaffolding_create_process_bins() {
   done
 }
 
-
-
-
 _setup_funcs() {
   # Use the stock `do_default_build_config` by renaming it so we can call the
   # stock behavior. How does this rate on the evil scale?
@@ -423,6 +433,8 @@ _setup_vars() {
   # `$scaffolding_ruby_pkg` is empty by default
   : "${scaffolding_ruby_pkg:=}"
   # The list of PostgreSQL-related gems
+    _default_node_pkg="core/node"
+
   _pg_gems=(pg activerecord-jdbcpostgresql-adapter jdbc-postgres
     jdbc-postgresql jruby-pg rjack-jdbc-postgres
     tgbyte-activerecord-jdbcpostgresql-adapter)
@@ -454,6 +466,9 @@ _setup_vars() {
 }
 
 _detect_gemfile() {
+  if [[ ! -f Gemfile ]]; then
+    exit_with "Ruby Scaffolding cannot find Gemfile in the root directory" 5
+  fi
   if [[ ! -f Gemfile ]]; then
     exit_with "Ruby Scaffolding cannot find Gemfile in the root directory" 5
   fi
@@ -581,6 +596,7 @@ _update_pkg_build_deps() {
   # `${pkg_build_deps[@]}` should be called last.
 
   _detect_git
+  _detect_yarn
 }
 
 _update_pkg_deps() {
@@ -591,7 +607,7 @@ _update_pkg_deps() {
   _detect_sqlite3
   _detect_pg
   _detect_nokogiri
-  _detect_execjs
+  _detect_node_pkg
   _detect_webpacker
   _detect_ruby
 }
@@ -623,13 +639,6 @@ _add_busybox() {
   debug "Updating pkg_deps=(${pkg_deps[*]}) from Scaffolding detection"
 }
 
-_detect_execjs() {
-  if _has_gem execjs; then
-    build_line "Detected 'execjs' gem in Gemfile.lock, adding node packages"
-    pkg_deps=(core/node ${pkg_deps[@]})
-    debug "Updating pkg_deps=(${pkg_deps[*]}) from Scaffolding detection"
-  fi
-}
 
 _detect_git() {
   if [[ -d ".git" ]]; then
